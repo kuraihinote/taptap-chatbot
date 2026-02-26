@@ -1,0 +1,17 @@
+# Web Framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Database
+asyncpg==0.30.0
+
+# Configuration
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+
+# LLM
+groq==0.13.1
+
+# Utilities
+python-multipart==0.0.20
