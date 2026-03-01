@@ -14,11 +14,14 @@ class Settings(BaseSettings):
     def DATABASE_URL(self) -> str:
         return (
             f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}?sslmode={self.DB_SSL}"
+            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
-    # LLM Configuration — Gemini only
-    LLM_API_KEY: str = ""
+    # Azure OpenAI Configuration
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_ENDPOINT: str = ""
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
+    AZURE_OPENAI_API_VERSION: str = "2025-01-01-preview"
 
     # Application Configuration
     APP_NAME: str = "TapTap Analytics Chatbot"
@@ -31,7 +34,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
-        extra = "ignore"  # ignore extra keys in .env like LLM_PROVIDER
+        extra = "ignore"
 
 
 settings = Settings()

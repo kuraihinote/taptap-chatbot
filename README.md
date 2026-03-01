@@ -5,7 +5,8 @@ A production-ready FastAPI backend for the TapTap analytics chatbot that connect
 ## Features
 
 - **Natural Language Queries**: Faculty can ask questions in plain English about student data
-- **LLM-Powered**: Uses Claude or OpenAI with tool calling to convert questions to SQL
+- **LLM-Powered**: Uses Azure OpenAI with tool calling to convert questions to SQL
+- **Intent & Slot Extraction**: The chatbot first detects the analytics domain and required parameters, validates them in Python, and only then builds the SQL query
 - **Safe Database Access**: Only allows SELECT queries, preventing data modification
 - **Async Architecture**: Built with FastAPI and asyncpg for high performance
 - **Comprehensive Analytics**: Supports queries about tests, employability scores, POD submissions, and more
@@ -16,9 +17,9 @@ A production-ready FastAPI backend for the TapTap analytics chatbot that connect
 app/
 ├── main.py      # FastAPI application with /chat endpoint
 ├── config.py    # Configuration management
-├── db.py        # Database connection and query execution
+├── db.py        # Database connection and query execution (asyncpg pool)
 ├── tools.py     # SQL execution tool for LLM
-└── llm.py       # LLM integration with tool calling
+└── llm.py       # LLM integration with Azure OpenAI tool-calling
 ```
 
 ## Supported Queries
@@ -59,7 +60,6 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```bash
 pip install -r requirements.txt
 ```
-
 4. Set up environment variables:
 ```bash
 cp .env.example .env   # keep the real credentials local only
@@ -119,14 +119,21 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 ### POST /chat
 
-Process a natural language query about student analytics.
+Process a natural language query about student analytics.  The endpoint now
+supports a lightweight conversation state so that the chatbot can remember
+which domain the user is discussing and ask follow‑up questions if necessary.
 
 **Request:**
 ```json
 {
-  "query": "Who solved today's POD in IT domain?"
+  "query": "Who solved today's POD in IT domain?",
+  "state": {}
 }
 ```
+
+If the model needs more information (e.g. a missing slot) it will return a
+clarifying question along with an updated state object.  Clients should pass
+that state back in subsequent requests until a complete answer is produced.
 
 **Response:**
 ```json
@@ -140,6 +147,7 @@ Process a natural language query about student analytics.
       "submitted_at": "2024-01-15T10:30:00Z"
     }
   ],
+  "state": {"domain":"pod_submission","domain_id":2},
   "success": true
 }
 ```

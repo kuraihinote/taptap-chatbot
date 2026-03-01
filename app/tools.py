@@ -13,6 +13,7 @@ async def execute_sql_query(query: str) -> Dict[str, Any]:
     Enforces the MAX_QUERY_RESULTS row cap.
     """
     try:
+        # execute_query is now async
         result = await execute_query(query)
 
         if not result["success"]:
@@ -36,7 +37,6 @@ async def execute_sql_query(query: str) -> Dict[str, Any]:
         }
 
     except ValueError as e:
-        # Raised by _validate_select_only in db.py
         logger.error(f"Query validation error: {e}")
         return {"success": False, "error": str(e), "data": [], "message": str(e)}
 
@@ -47,7 +47,7 @@ async def execute_sql_query(query: str) -> Dict[str, Any]:
 
 def get_tool_definition() -> Dict[str, Any]:
     """
-    JSON-schema tool definition passed to Gemini as a FunctionDeclaration.
+    JSON-schema tool definition passed to the LLM as a FunctionDeclaration.
     """
     return {
         "name": "execute_sql_query",

@@ -25,11 +25,14 @@ logger = logging.getLogger(__name__)
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000,
                        description="Natural language question about student analytics")
+    state: Dict[str, Any] = Field(default_factory=dict,
+                                  description="Optional conversation state from previous turn")
 
 
 class ChatResponse(BaseModel):
     answer: str
     data: list = []
+    state: Dict[str, Any] = {}
     success: bool = True
 
 
@@ -47,10 +50,11 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting TapTap Analytics Chatbot...")
+    # database setup is asynchronous now
     await init_db()
     logger.info("Database pool ready")
     await init_llm()
-    logger.info("LLM processor ready")
+    logger.info("LLM agent ready")
     yield
     logger.info("Shutting down...")
     await close_db()
@@ -103,12 +107,12 @@ async def chat_endpoint(request: ChatRequest):
     Process a natural language query about student analytics.
 
     Steps:
-    1. Gemini LLM decides which SQL to run
+    1. Azure OpenAI LLM decides which SQL to run
     2. SQL is executed on Azure PostgreSQL via the tool call
-    3. Gemini summarises the results in plain English
+    3. Azure OpenAI summarises the results in plain English
     """
     logger.info(f"Query: {request.query[:120]}")
-    result = await process_user_query(request.query)
+    result = await process_user_query(request.query, state=request.state)
 
     if not result.get("success", False):
         raise HTTPException(
@@ -119,6 +123,7 @@ async def chat_endpoint(request: ChatRequest):
     return ChatResponse(
         answer=result["answer"],
         data=result.get("data", []),
+        state=result.get("state", {}),
         success=True,
     )
 
@@ -131,7 +136,7 @@ async def get_info():
     return {
         "app_name": settings.APP_NAME,
         "version": settings.VERSION,
-        "llm_provider": "gemini-1.5-pro",
+        "llm_provider": "azure-openai-gpt-4o-mini",
         "database_info": db_summary,
         "example_questions": [
             "Who solved today's POD in IT domain?",

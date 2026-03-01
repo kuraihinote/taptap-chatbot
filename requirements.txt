@@ -10,8 +10,10 @@ pydantic==2.10.4
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
 
-# LLM
-groq==0.13.1
+# LLM & AI
+langchain==0.1.9
+langchain-openai==0.0.8
+langchain-core==0.1.22
 
 # Utilities
 python-multipart==0.0.20
