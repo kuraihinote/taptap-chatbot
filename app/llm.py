@@ -56,6 +56,11 @@ class LLMProcessor:
             "  • test_top_performers             — top students in a specific test\n"
             "  • test_risk_students              — students below a risk threshold in a test\n"
             "  • pod_today_solvers               — who solved today's POD in a given domain\n"
+            "  • pod_all_solvers                 — who solved POD historically in a given domain\n"
+            "  • pod_streak_filter               — students with a POD streak above a threshold\n"
+            "  • pod_top_scorers                 — top students by total POD score\n"
+            "  • pod_failures                    — students who attempted POD but failed\n"
+            "  • pod_problem_stats               — which POD problem had the most solvers or attempts (no domain needed)\n"
             "  • user_profile                    — details for a specific student\n\n"
             "RULES:\n"
             "  • Use only SELECT queries — never modify data.\n"
@@ -82,6 +87,11 @@ class LLMProcessor:
         "test_risk_students": ["test_id", "threshold"],
         # POD / daily problems
         "pod_today_solvers": ["domain_id"],
+        "pod_all_solvers": ["domain_id"],
+        "pod_streak_filter": ["threshold"],   
+        "pod_top_scorers": [],                
+        "pod_failures": [],                   
+        "pod_problem_stats": [],
         # Student view
         "user_profile": ["user_id"],
     }
@@ -105,7 +115,16 @@ class LLMProcessor:
             "  - test_top_performers\n"
             "  - test_risk_students\n"
             "  - pod_today_solvers\n"
+            "  - pod_all_solvers\n"
+            "  - pod_streak_filter\n"
+            "  - pod_top_scorers\n"
+            "  - pod_failures\n"
+            "  - pod_problem_stats\n"
             "  - user_profile\n\n"
+            "INTENT DISAMBIGUATION:\n"
+            "  - pod_all_solvers     → asks WHO solved POD (returns student names)\n"
+            "  - pod_problem_stats   → asks WHICH POD/problem had most solvers or attempts (returns problem titles and counts)\n"
+            "  - pod_top_scorers     → asks which students have the highest total POD score\n\n"
             "\"intent\" must be exactly one of those strings (or null if you are unsure).\n"
             "\"slots\" must be an object containing any filters such as hackathon_id, "
             "test_id, user_id, batch, section (aptitude/coding/reasoning), "
@@ -142,48 +161,203 @@ class LLMProcessor:
         return len(missing) == 0, missing
 
     def _build_sql(self, intent: str, slots: Dict[str, Any]) -> str:
-        """Construct a simple SELECT statement from validated slots based on intent.
+        """Construct a precise SELECT statement for each intent using real schema."""
 
-        NOTE: This assumes column names like hackathon_id, test_id, section, etc.
-        Align these with your real schema.
-        """
-        # Map each intent to a primary table. You can refine these per your DB.
-        intent_table = {
-            "hackathon_overview": "public.hackathon_submission",
-            "hackathon_participants": "public.hackathon_submission",
-            "employability_overall_scores": "public.employability_track_submission",
-            "employability_section_scores": "public.employability_track_submission",
-            "test_top_performers": "public.test_submission",
-            "test_risk_students": "public.test_submission",
-            "pod_today_solvers": "pod.pod_submission",
-            "user_profile": "public.user",
-        }
-        table = intent_table.get(intent)
-        if not table:
-            raise ValueError(f"Unknown intent '{intent}'")
+        if intent == "pod_today_solvers":
+            domain_id = slots.get("domain_id")
+            domain_filter = f"AND ps.domain_id = {int(domain_id)}" if domain_id is not None else ""
+            return (
+                "SELECT DISTINCT "
+                "u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, "
+                "p.title AS problem_title, "
+                "p.difficulty, "
+                "ps.status, "
+                "ps.obtained_score AS score, "
+                "ps.create_at AS submitted_at "
+                "FROM pod.pod_submission ps "
+                "JOIN public.user u ON u.id = ps.user_id "
+                "JOIN public.problem p ON p.id = ps.question_id "
+                "JOIN public.problem_of_the_day pod ON pod.id = ps.problem_of_the_day_id "
+                f"WHERE pod.date = CURRENT_DATE "
+                f"AND ps.status = 'pass' "
+                f"{domain_filter} "
+                "ORDER BY ps.create_at "
+                "LIMIT 50;"
+            )
+        
+        if intent == "pod_all_solvers":
+            domain_id = slots.get("domain_id")
+            domain_filter = f"AND ps.domain_id = {int(domain_id)}" if domain_id is not None else ""
+            return (
+                "SELECT DISTINCT "
+                "u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, "
+                "p.title AS problem_title, "
+                "p.difficulty, "
+                "ps.status, "
+                "ps.obtained_score AS score, "
+                "ps.create_at AS submitted_at "
+                "FROM pod.pod_submission ps "
+                "JOIN public.user u ON u.id = ps.user_id "
+                "JOIN public.problem p ON p.id = ps.question_id "
+                f"WHERE ps.status = 'pass' "
+                f"{domain_filter} "
+                "ORDER BY ps.create_at DESC "
+                "LIMIT 50;"
+            )    
 
-        # Per‑intent slot → column overrides so that the LLM can think in
-        # business terms (e.g. test_id) while we map to real columns
-        # (e.g. problem_id) in the schema.
-        slot_column_overrides: Dict[str, Dict[str, str]] = {
-            # public.test_submission uses problem_id, not test_id, and
-            # "section" in the intent maps to the "type" column (coding/mcq/...).
-            "test_top_performers": {"test_id": "problem_id", "section": "type"},
-            "test_risk_students": {"test_id": "problem_id", "section": "type"},
-        }
-        overrides = slot_column_overrides.get(intent, {})
+        if intent == "hackathon_overview":
+            hackathon_id = slots.get("hackathon_id")
+            return (
+                "SELECT h.title, h.status, h.start_date, h.end_date, "
+                "COUNT(DISTINCT r.user_id) AS participant_count, "
+                "AVG(r.current_score) AS avg_score, "
+                "MAX(r.current_score) AS top_score "
+                "FROM public.hackathon h "
+                "LEFT JOIN public.user_hackathon_participation r ON r.hackathon_id = h.id "
+                f"WHERE h.id = {int(hackathon_id)} "
+                "GROUP BY h.id, h.title, h.status, h.start_date, h.end_date "
+                "LIMIT 1;"
+            )
 
-        filters: List[str] = []
-        for k, v in slots.items():
-            # Map logical slot name -> physical column name when needed
-            column_name = overrides.get(k, k)
-            # naive quoting
-            if isinstance(v, (int, float)):
-                filters.append(f"{column_name} = {v}")
-            else:
-                filters.append(f"{column_name} = '{v}'")
-        where_clause = " AND ".join(filters) if filters else "1=1"
-        return f"SELECT * FROM {table} WHERE {where_clause} LIMIT 50;"
+        if intent == "hackathon_participants":
+            hackathon_id = slots.get("hackathon_id")
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, r.current_score AS score, r.start_time "
+                "FROM public.user_hackathon_participation r "
+                "JOIN public.user u ON u.id = r.user_id "
+                f"WHERE r.hackathon_id = {int(hackathon_id)} "
+                "ORDER BY r.current_score DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "employability_overall_scores":
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, e.verbal_score, e.coding_score, e.reasoning_score, e.total_score "
+                "FROM public.employability_track_submission e "
+                "JOIN public.user u ON u.id = e.user_id "
+                "ORDER BY e.total_score DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "employability_section_scores":
+            section = slots.get("section", "total")
+            section_col_map = {
+                "verbal": "e.verbal_score",
+                "coding": "e.coding_score",
+                "reasoning": "e.reasoning_score",
+                "total": "e.total_score",
+            }
+            col = section_col_map.get(str(section).lower(), "e.total_score")
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                f"u.email, {col} AS section_score "
+                "FROM public.employability_track_submission e "
+                "JOIN public.user u ON u.id = e.user_id "
+                f"ORDER BY {col} DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "test_top_performers":
+            test_id = slots.get("test_id")
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, ts.score, ts.status, ts.create_at "
+                "FROM public.test_submission ts "
+                "JOIN public.user u ON u.id = ts.user_id "
+                f"WHERE ts.problem_id = {int(test_id)} "
+                "ORDER BY ts.score DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "test_risk_students":
+            test_id = slots.get("test_id")
+            threshold = slots.get("threshold", 40)
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, ts.score, ts.status "
+                "FROM public.test_submission ts "
+                "JOIN public.user u ON u.id = ts.user_id "
+                f"WHERE ts.problem_id = {int(test_id)} "
+                f"AND ts.score < {int(threshold)} "
+                "ORDER BY ts.score ASC "
+                "LIMIT 50;"
+            )
+
+        if intent == "pod_streak_filter":
+            threshold = slots.get("threshold", 5)
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, ps.streak_count, ps.is_active, ps.start_date, ps.end_date "
+                "FROM public.pod_streak ps "
+                "JOIN public.user u ON u.id = ps.user_id "
+                f"WHERE ps.streak_count > {int(threshold)} "
+                "ORDER BY ps.streak_count DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "pod_top_scorers":
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, "
+                "COUNT(ps.id) AS total_solved, "
+                "SUM(ps.obtained_score) AS total_score "
+                "FROM pod.pod_submission ps "
+                "JOIN public.user u ON u.id = ps.user_id "
+                "WHERE ps.status = 'pass' "
+                "GROUP BY u.id, u.first_name, u.last_name, u.email "
+                "ORDER BY total_score DESC "
+                "LIMIT 50;"
+            )
+
+        if intent == "pod_failures":
+            return (
+                "SELECT u.first_name || ' ' || u.last_name AS student_name, "
+                "u.email, "
+                "p.title AS problem_title, "
+                "ps.status, "
+                "ps.create_at AS attempted_at "
+                "FROM pod.pod_submission ps "
+                "JOIN public.user u ON u.id = ps.user_id "
+                "JOIN public.problem p ON p.id = ps.question_id "
+                "WHERE ps.status = 'fail' "
+                "ORDER BY ps.create_at DESC "
+                "LIMIT 50;"
+            )
+            
+        if intent == "pod_problem_stats":
+            domain_id = slots.get("domain_id")
+            domain_join_filter = f"AND ps.domain_id = {int(domain_id)}" if domain_id is not None else ""
+            return (
+                "SELECT p.title AS problem_title, "
+                "p.difficulty, "
+                "pod.date AS pod_date, "
+                "COUNT(ps.id) AS total_attempts, "
+                "COUNT(DISTINCT CASE WHEN ps.status = 'pass' THEN ps.user_id END) AS unique_solvers "
+                "FROM public.problem_of_the_day pod "
+                "JOIN public.problem p ON p.id = pod.question_id "
+                f"LEFT JOIN pod.pod_submission ps ON ps.problem_of_the_day_id = pod.id {domain_join_filter} "
+                "GROUP BY p.title, p.difficulty, pod.date "
+                "ORDER BY unique_solvers DESC "
+                "LIMIT 50;"
+            )
+          
+
+        if intent == "user_profile":
+            user_id = slots.get("user_id")
+            safe_id = str(user_id).replace("'", "''")
+            return (
+                "SELECT u.id, u.first_name, u.last_name, u.email, u.phone, "
+                "u.roll_number, u.role, u.is_placed, u.active_streak_count "
+                "FROM public.user u "
+                f"WHERE u.id = '{safe_id}' OR u.email ILIKE '%{safe_id}%' "
+                "LIMIT 1;"
+            )
+
+        raise ValueError(f"Unknown intent '{intent}'")
 
     async def _generate_response(self, intent: str, slots: Dict[str, Any],
                                  query_result: Dict[str, Any]) -> str:
