@@ -1,106 +1,52 @@
+import json
 import logging
 from typing import Dict, Any
 
-from .config import settings
+from langchain_core.tools import tool
+
 from .db import execute_query
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
 
-async def execute_sql_query(query: str) -> Dict[str, Any]:
-    """
-    Execute a SQL SELECT query on behalf of the LLM tool call.
-    Enforces the MAX_QUERY_RESULTS row cap.
+@tool
+async def query_database(query: str) -> str:
+    """Execute a SQL SELECT query on the PostgreSQL analytics database.
+
+    Use this tool whenever you need to retrieve data about students, tests,
+    hackathons, employability scores, or Problem-of-the-Day (POD) submissions.
+
+    Rules enforced automatically:
+    - Only SELECT statements are allowed.
+    - A LIMIT clause is added automatically if missing.
+    - Schema-qualified table names are required (e.g. pod.pod_submission).
+
+    Returns a JSON string with keys: success, data (list of row dicts),
+    row_count, and optionally error.
     """
     try:
-        # execute_query is now async
         result = await execute_query(query)
 
-        if not result["success"]:
-            return {
-                "success": False,
-                "error": result["error"],
-                "data": [],
-                "message": f"Query failed: {result['error']}",
-            }
+        # Enforce row cap
+        if result.get("success") and len(result.get("data", [])) > settings.MAX_QUERY_RESULTS:
+            result["data"] = result["data"][: settings.MAX_QUERY_RESULTS]
+            result["row_count"] = settings.MAX_QUERY_RESULTS
+            result["capped"] = True
+            logger.warning("Results capped at %d rows", settings.MAX_QUERY_RESULTS)
 
-        data = result["data"]
-        if len(data) > settings.MAX_QUERY_RESULTS:
-            data = data[: settings.MAX_QUERY_RESULTS]
-            logger.warning(f"Results capped at {settings.MAX_QUERY_RESULTS} rows")
-
-        return {
-            "success": True,
-            "data": data,
-            "row_count": len(data),
-            "message": f"Returned {len(data)} row(s).",
-        }
+        return json.dumps(result, default=str)
 
     except ValueError as e:
-        logger.error(f"Query validation error: {e}")
-        return {"success": False, "error": str(e), "data": [], "message": str(e)}
+        logger.error("Query validation error: %s", e)
+        return json.dumps({"success": False, "error": str(e), "data": []})
 
     except Exception as e:
-        logger.error(f"Unexpected error in execute_sql_query: {e}")
-        return {"success": False, "error": str(e), "data": [], "message": str(e)}
-
-
-def get_tool_definition() -> Dict[str, Any]:
-    """
-    JSON-schema tool definition passed to the LLM as a FunctionDeclaration.
-    """
-    return {
-        "name": "execute_sql_query",
-        "description": (
-            "Execute a SQL SELECT query on the PostgreSQL database to retrieve "
-            "student performance data. Use this for any question about students, "
-            "test scores, employability results, POD submissions, or hackathons. "
-            "Only SELECT queries are permitted."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "A valid SQL SELECT statement. "
-                        "Tables: public.user (id, first_name, last_name, email), "
-                        "public.test_submission (user_id, problem_id, score, status, create_at), "
-                        "pod.pod_submission (user_id, question_id, domain_id, status, create_at), "
-                        "pod.problem_of_the_day (id, date, question_id, difficulty). "
-                        "Use schema-qualified names (e.g. pod.pod_submission). "
-                        "Always JOIN public.user ON u.id = table.user_id for student names. "
-                        "Domain filtering uses domain_id from pod.pod_submission."
-                    ),
-                }
-            },
-            "required": ["query"],
-        },
-    }
+        logger.error("Unexpected error in query_database: %s", e)
+        return json.dumps({"success": False, "error": str(e), "data": []})
 
 
 async def get_database_summary() -> Dict[str, Any]:
-    """Used by the /info endpoint to show available tables."""
-    table_descriptions = {
-        "public.user": "Student information (id, first_name, last_name, email, roll_number, ...)",
-        "public.test_submission": "Test results (user_id, problem_id, score, status, create_at)",
-        "pod.pod_submission": "POD submissions (user_id, question_id, domain_id, status, create_at)",
-        "pod.problem_of_the_day": "Daily problems (id, date, question_id, difficulty, is_active)",
-    }
-
-    try:
-        result = await execute_query(
-            "SELECT table_schema, table_name "
-            "FROM information_schema.tables "
-            "WHERE table_schema IN ('public', 'pod') "
-            "ORDER BY table_schema, table_name"
-        )
-        available = [f"{r['table_schema']}.{r['table_name']}" for r in result["data"]]
-    except Exception as e:
-        logger.error(f"Could not fetch table list: {e}")
-        available = list(table_descriptions.keys())
-
-    return {
-        "available_tables": available,
-        "table_descriptions": table_descriptions,
-    }
+    """Return a brief description of available tables (used by /info endpoint)."""
+    from .db import get_cached_schema
+    return {"schema_description": get_cached_schema()}

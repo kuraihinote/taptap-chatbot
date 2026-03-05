@@ -12,8 +12,17 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
+        """asyncpg-compatible URL used by the connection pool."""
         return (
             f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}"
+            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        )
+
+    @property
+    def SQLALCHEMY_DATABASE_URL(self) -> str:
+        """SQLAlchemy async URL used for schema introspection."""
+        return (
+            f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
@@ -25,11 +34,12 @@ class Settings(BaseSettings):
 
     # Application Configuration
     APP_NAME: str = "TapTap Analytics Chatbot"
-    VERSION: str = "1.0.0"
+    VERSION: str = "2.0.0"
     DEBUG: bool = False
 
     # Query Configuration
     MAX_QUERY_RESULTS: int = 100
+    DEFAULT_LIMIT: int = 50
 
     class Config:
         env_file = ".env"

@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .db import init_db, close_db
+from .db import close_db, get_cached_schema, init_db, load_schema
 from .llm import init_llm, process_user_query
 
 logging.basicConfig(
@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ #
 
 class ChatRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=1000,
-                       description="Natural language question about student analytics")
-    state: Dict[str, Any] = Field(default_factory=dict,
-                                  description="Optional conversation state from previous turn")
+    query: str = Field(
+        ..., min_length=1, max_length=2000,
+        description="Natural language question about student analytics"
+    )
+    state: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Conversation state (messages history) from the previous turn"
+    )
 
 
 class ChatResponse(BaseModel):
@@ -49,14 +53,24 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting TapTap Analytics Chatbot...")
-    # database setup is asynchronous now
+    logger.info("Starting TapTap Analytics Chatbot v%s …", settings.VERSION)
+
+    # 1. Open DB pool
     await init_db()
     logger.info("Database pool ready")
+
+    # 2. Introspect schema and cache it BEFORE the LLM is created so the
+    #    system prompt already contains the live schema on the first request.
+    await load_schema()
+    logger.info("Schema description cached")
+
+    # 3. Initialise the LangGraph agent (uses the cached schema)
     await init_llm()
     logger.info("LLM agent ready")
+
     yield
-    logger.info("Shutting down...")
+
+    logger.info("Shutting down …")
     await close_db()
 
 
@@ -67,7 +81,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
-    description="AI-powered analytics chatbot for TapTap student performance data",
+    description="Schema-driven AI analytics chatbot for TapTap student performance data",
     lifespan=lifespan,
 )
 
@@ -86,7 +100,11 @@ app.add_middleware(
 
 @app.get("/", response_model=Dict[str, str])
 async def root():
-    return {"message": "TapTap Analytics Chatbot API", "version": settings.VERSION, "docs": "/docs"}
+    return {
+        "message": "TapTap Analytics Chatbot API",
+        "version": settings.VERSION,
+        "docs": "/docs",
+    }
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -106,12 +124,10 @@ async def chat_endpoint(request: ChatRequest):
     """
     Process a natural language query about student analytics.
 
-    Steps:
-    1. Azure OpenAI LLM decides which SQL to run
-    2. SQL is executed on Azure PostgreSQL via the tool call
-    3. Azure OpenAI summarises the results in plain English
+    The LangGraph agent dynamically writes SQL from the database schema,
+    executes it via the `query_database` tool, and explains the results.
     """
-    logger.info(f"Query: {request.query[:120]}")
+    logger.info("Query: %s", request.query[:120])
     result = await process_user_query(request.query, state=request.state)
 
     if not result.get("success", False):
@@ -130,21 +146,21 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.get("/info", response_model=Dict[str, Any])
 async def get_info():
-    """Return database schema info and example questions."""
-    from .tools import get_database_summary
-    db_summary = await get_database_summary()
+    """Return the live schema description and example queries."""
     return {
         "app_name": settings.APP_NAME,
         "version": settings.VERSION,
-        "llm_provider": "azure-openai-gpt-4o-mini",
-        "database_info": db_summary,
+        "llm_provider": f"azure-openai-{settings.AZURE_OPENAI_DEPLOYMENT}",
+        "schema_description": get_cached_schema(),
         "example_questions": [
-            "Who solved today's POD in IT domain?",
-            "Who is the top student in MET test?",
-            "Top 10 students by average coding score",
-            "Students with employability score above 80",
-            "Students at risk with score below 40",
-            "Average verbal, coding, and reasoning score per student",
+            "Who solved today's POD in the IT domain?",
+            "Who are the top 10 performers in MET test this week?",
+            "Which students scored above 80 in coding but below 40 in reasoning?",
+            "Show students with a POD streak greater than 5.",
+            "Which college has the best average coding score?",
+            "Who has the highest overall employability score?",
+            "Show students at risk with scores below 40 in the last round.",
+            "Which hackathon had the most participants?",
         ],
     }
 
@@ -163,7 +179,7 @@ async def http_exception_handler(request, exc):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error("Unhandled exception: %s", exc, exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"error": "An unexpected error occurred", "status_code": 500, "success": False},
