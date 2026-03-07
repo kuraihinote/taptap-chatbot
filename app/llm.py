@@ -71,6 +71,8 @@ SCHEMA CLARIFICATIONS:
   • pod.pod_submission.status values are 'pass' or 'fail' (never 'solved' or 'completed')
   • domain filtering on POD: JOIN public.problem p ON p.id = ps.question_id, then WHERE 'IT' = ANY(p.domain)
   • public.user primary key is 'id' (varchar) — other tables reference it as user_id
+  • When listing students who failed/passed POD, use DISTINCT on user to avoid duplicate rows per student — unless the user asks for "all attempts"
+  • Always include the problem title in POD queries: JOIN public.problem p ON p.id = ps.question_id, SELECT p.title AS problem_title
 
 
 SCOPE:
